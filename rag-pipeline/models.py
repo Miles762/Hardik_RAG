@@ -40,7 +40,7 @@ class QueryRequest(BaseModel):
         ...,
         min_length=1,
         max_length=1000,
-        description="The user's natural-language question"
+        description="The user's natural-language question",
     )
 
 
