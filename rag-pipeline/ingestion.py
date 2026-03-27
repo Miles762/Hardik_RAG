@@ -1,26 +1,8 @@
-# =============================================================================
-# ingestion.py
-# -----------------------------------------------------------------------------
-# Handles the full data ingestion pipeline:
-#   1. Security validation  → reject invalid / malicious files
-#   2. PDF text extraction  → pull raw text from each page (PyMuPDF)
-#   3. Chunking             → sliding-window split into overlapping chunks
-#   4. Embedding            → convert chunks to vectors via Mistral API
-#   5. Storage              → persist chunks + vectors in VectorStore
-#
-# PDF Requirements satisfied:
-#   - "Develop an API endpoint to upload a set of files." (wired in main.py)
-#   - "Implement a text extraction and chunking algorithm from PDF files.
-#      Write down your considerations." → see chunking section below
-#   - Security: MIME type check, file size limit, filename sanitisation
-#   - Scalability: batch embedding — one API call per 32 chunks, not per chunk
-# =============================================================================
-
 import hashlib
 import re
 from pathlib import Path
 
-import fitz  # PyMuPDF — pip install pymupdf
+import fitz  
 from mistralai import Mistral
 
 from config import (
@@ -34,18 +16,12 @@ from config import (
 from models import Chunk
 from storage import vector_store
 
-# Mistral client — instantiated once at module level (reused across calls)
 _mistral = Mistral(api_key=MISTRAL_API_KEY)
 
-# Batch size for embedding API calls.
-# Mistral's embed endpoint accepts up to 32 texts per request.
-# Batching cuts API round-trips from N to ceil(N/32).
 EMBED_BATCH_SIZE = 32
 
 
-# =============================================================================
-# 1. Security validation
-# =============================================================================
+
 
 def validate_file(filename: str, content_type: str, file_bytes: bytes) -> None:
     """
@@ -59,45 +35,35 @@ def validate_file(filename: str, content_type: str, file_bytes: bytes) -> None:
         not a renamed executable — defence against MIME spoofing
       - Filename is sanitised (no path traversal like ../../etc/passwd)
 
-    PDF Requirement: Security — validate uploads before touching disk or LLM.
     """
-    # --- MIME type whitelist ---
     if content_type not in ALLOWED_MIME_TYPES:
         raise ValueError(
             f"Unsupported file type '{content_type}'. Only PDF files are accepted."
         )
 
-    # --- File size limit ---
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
         mb = len(file_bytes) / (1024 * 1024)
         raise ValueError(
             f"File size {mb:.1f} MB exceeds the {MAX_FILE_SIZE_BYTES // (1024*1024)} MB limit."
         )
 
-    # --- Magic bytes check (first 4 bytes of every valid PDF = b"%PDF") ---
     if not file_bytes.startswith(b"%PDF"):
         raise ValueError(
             "File does not appear to be a valid PDF (missing %PDF header)."
         )
 
-    # --- Filename sanitisation: strip directory components ---
-    # Path("../../etc/passwd").name → "passwd"  (safe)
     safe_name = Path(filename).name
     if not safe_name or safe_name != filename:
         raise ValueError(
             f"Invalid filename '{filename}'. Directory traversal is not allowed."
         )
 
-    # --- Only allow alphanumeric, dash, underscore, dot in filename ---
     if not re.match(r"^[\w\-. ]+$", safe_name):
         raise ValueError(
             f"Filename '{safe_name}' contains invalid characters."
         )
 
 
-# =============================================================================
-# 2. PDF text extraction
-# =============================================================================
 
 def extract_pages(file_bytes: bytes) -> list[tuple[int, str]]:
     """
@@ -121,44 +87,19 @@ def extract_pages(file_bytes: bytes) -> list[tuple[int, str]]:
 
     for page_index in range(len(doc)):
         page = doc[page_index]
-        text = page.get_text("text")  # plain text extraction mode
+        text = page.get_text("text")  
 
-        # Normalise whitespace: collapse multiple blank lines into one
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
-        # Skip near-empty pages (images, blanks, chapter dividers)
         if len(text) < 20:
             continue
 
-        pages.append((page_index + 1, text))  # convert to 1-based page number
+        pages.append((page_index + 1, text))  
 
     doc.close()
     return pages
 
 
-# =============================================================================
-# 3. Chunking — sliding window with sentence-boundary awareness
-# =============================================================================
-
-# Consideration (as required by PDF):
-# ─────────────────────────────────────────────────────────────────────────────
-# WHY sliding window?
-#   Fixed non-overlapping chunks risk splitting a sentence or idea across two
-#   chunks. A query about that idea would then find neither chunk particularly
-#   relevant. Overlapping windows ensure every sentence appears fully in at
-#   least one chunk.
-#
-# WHY 512 chars / 128 overlap?
-#   - 512 chars ≈ 100-130 words — enough semantic content for meaningful
-#     embedding, small enough to stay focused on one idea.
-#   - 128-char overlap ≈ 1-2 sentences — enough to preserve cross-boundary
-#     context without doubling storage.
-#
-# WHY respect sentence boundaries?
-#   Cutting mid-sentence produces incomplete thoughts that confuse the
-#   embedding model. We always extend a chunk to the next sentence end (". ")
-#   before splitting, so embeddings represent complete ideas.
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _find_sentence_end(text: str, pos: int) -> int:
     """
@@ -168,7 +109,6 @@ def _find_sentence_end(text: str, pos: int) -> int:
     """
     boundary = re.search(r"[.?!]\s+[A-Z]", text[pos:])
     if boundary:
-        # +1 to include the punctuation itself in the current chunk
         return pos + boundary.start() + 1
     return len(text)
 
@@ -188,7 +128,7 @@ def _is_table_heavy(text: str) -> bool:
          long lines; tables have many short ones
 
     Domain examples this covers:
-      - Financial: "$9,133"  "1,429"  "(408)"
+      - Financial: "$4,013"  "1,429"  "(408)"
       - Medical:   "10 mg"   "0.05"   "< 0.001"   "N=234"
       - Scientific: "3.14"   "±0.02"  "p=0.043"
       - Engineering: "M12x1.75"  "2,400 rpm"  "±5%"
@@ -202,24 +142,24 @@ def _is_table_heavy(text: str) -> bool:
     numeric_lines = sum(
         1 for l in lines
         if re.search(
-            r"\b\d+[.,]\d+\b"          # decimals: 3.14, 1,429
-            r"|\b\d{2,}\b"             # standalone numbers ≥2 digits
-            r"|\d+\s*(?:mg|kg|ml|cm|mm|rpm|%|pts?)\b"  # measurements
-            r"|\(\d[\d,.]*\)"          # parenthesised numbers (financial negatives)
-            r"|\$[\d,]+",              # dollar amounts
+            r"\b\d+[.,]\d+\b"          
+            r"|\b\d{2,}\b"            
+            r"|\d+\s*(?:mg|kg|ml|cm|mm|rpm|%|pts?)\b"  
+            r"|\(\d[\d,.]*\)"          
+            r"|\$[\d,]+",              
             l,
         )
     )
     spaced_col_lines = sum(
         1 for l in lines
-        if "\t" in l or re.search(r"  {2,}", l)  # tabs or 2+ consecutive spaces
+        if "\t" in l or re.search(r"  {2,}", l)  
     )
 
     total = len(lines)
     signals = (
-        (short_lines / total > 0.50) +       # >50% short lines
-        (numeric_lines / total > 0.25) +      # >25% numeric lines
-        (spaced_col_lines / total > 0.20)     # >20% column-aligned lines
+        (short_lines / total > 0.50) +       
+        (numeric_lines / total > 0.25) +      
+        (spaced_col_lines / total > 0.20)     
     )
     return signals >= 2
 
@@ -240,11 +180,11 @@ def chunk_text(
           chunk = text[start:end]
           start = end - CHUNK_OVERLAP   ← next chunk starts OVERLAP chars back
 
-    Special case — financial table pages:
-      Pages where >25% of lines contain monetary values are kept in larger
-      chunks (up to 2×CHUNK_SIZE) so that row labels stay with their numbers.
-      Without this, "Total revenues" and "$9,133" end up in different chunks
-      and neither chunk scores well for a "total revenue" query.
+    Special case — table-heavy pages:
+      Pages detected as table-heavy are kept in larger chunks (up to 2×CHUNK_SIZE)
+      so that row labels stay with their values across any domain.
+      Without this, a label and its value end up in different chunks and neither
+      scores well for a query about that data point.
 
     Each chunk is assigned a deterministic chunk_id based on a hash of its
     content — avoids duplicate chunks if the same file is ingested twice.
@@ -254,15 +194,9 @@ def chunk_text(
     index = 0
     text_len = len(text)
 
-    # Table-heavy pages: keep the whole page as one chunk if it fits within
-    # 4× CHUNK_SIZE. Prepend a descriptive header so the embedding captures
-    # what kind of data this page contains — without this, terse table text
-    # (row labels + numbers on separate lines) scores poorly against natural
-    # language queries even when it's the correct answer.
+    
     if _is_table_heavy(text) and text_len <= CHUNK_SIZE * 4:
-        # Build a natural-language header from the first few non-empty lines
-        # (these are typically the section title and date, e.g.
-        #  "Condensed Consolidated Balance Sheets  April 30, 2024")
+        
         header_lines = [l.strip() for l in text.splitlines() if l.strip()][:6]
         header = " | ".join(header_lines)
         enriched_text = f"[Table: {header}]\n\n{text.strip()}"
@@ -278,27 +212,23 @@ def chunk_text(
         ))
         return chunks
 
-    # For large table pages or prose pages: sliding window
+   
     effective_chunk_size = CHUNK_SIZE * 2 if _is_table_heavy(text) else CHUNK_SIZE
 
     while start < text_len:
         end = start + effective_chunk_size
 
         if end < text_len:
-            # Extend to the nearest sentence boundary so we don't cut mid-sentence
+           
             end = _find_sentence_end(text, end)
 
         chunk_text_content = text[start:end].strip()
 
-        # Skip chunks that are pure whitespace or too short to be meaningful
         if len(chunk_text_content) < 20:
             start = end - CHUNK_OVERLAP
             index += 1
             continue
 
-        # Deterministic chunk_id: hash of (file + page + content)
-        # This means re-ingesting the same file produces the same IDs,
-        # which makes deduplication possible in future iterations.
         raw_id = f"{source_file}_{page_number}_{chunk_text_content[:50]}"
         chunk_id = hashlib.md5(raw_id.encode()).hexdigest()[:12]
 
@@ -310,16 +240,12 @@ def chunk_text(
             chunk_index=index,
         ))
 
-        # Move start back by CHUNK_OVERLAP for the sliding window
         start = end - CHUNK_OVERLAP
         index += 1
 
     return chunks
 
 
-# =============================================================================
-# 4. Embedding — batch API calls to Mistral
-# =============================================================================
 
 def embed_chunks(chunks: list[Chunk]) -> list[list[float]]:
     """
@@ -333,7 +259,6 @@ def embed_chunks(chunks: list[Chunk]) -> list[list[float]]:
     The returned list is index-aligned with the input chunks list:
       embeddings[i] is the vector for chunks[i].
 
-    PDF Requirement: Scalability — batch calls instead of one-per-chunk.
     """
     embeddings: list[list[float]] = []
 
@@ -346,16 +271,11 @@ def embed_chunks(chunks: list[Chunk]) -> list[list[float]]:
             inputs=texts,
         )
 
-        # response.data is a list of EmbeddingObject, each has a .embedding field
         for embedding_obj in response.data:
             embeddings.append(embedding_obj.embedding)
 
     return embeddings
 
-
-# =============================================================================
-# 5. Top-level ingestion function — called by FastAPI endpoint
-# =============================================================================
 
 def ingest_file(filename: str, content_type: str, file_bytes: bytes) -> int:
     """
@@ -369,16 +289,9 @@ def ingest_file(filename: str, content_type: str, file_bytes: bytes) -> int:
       4. embed_chunks()    → Mistral embedding vectors
       5. vector_store.add()→ persist to in-memory + disk store
 
-    PDF Requirements satisfied:
-      - "Develop an API endpoint to upload a set of files" (pipeline entry point)
-      - "Implement a text extraction and chunking algorithm from PDF files"
-      - Security: validation before any processing
-      - Scalability: batch embedding
     """
-    # Step 1: Security validation — raises ValueError on failure
     validate_file(filename, content_type, file_bytes)
 
-    # Step 2: Extract text page by page
     pages = extract_pages(file_bytes)
 
     if not pages:
@@ -387,7 +300,6 @@ def ingest_file(filename: str, content_type: str, file_bytes: bytes) -> int:
             "The file may be a scanned image PDF."
         )
 
-    # Step 3: Chunk every page using sliding window
     all_chunks: list[Chunk] = []
     for page_number, page_text in pages:
         page_chunks = chunk_text(page_text, filename, page_number)
@@ -396,10 +308,8 @@ def ingest_file(filename: str, content_type: str, file_bytes: bytes) -> int:
     if not all_chunks:
         raise ValueError(f"No chunks produced from '{filename}'.")
 
-    # Step 4: Embed all chunks (batched API calls)
     embeddings = embed_chunks(all_chunks)
 
-    # Step 5: Persist chunks + embeddings to the vector store
     vector_store.add(all_chunks, embeddings)
 
     return len(all_chunks)
