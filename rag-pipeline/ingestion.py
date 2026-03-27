@@ -1,7 +1,6 @@
 import hashlib
 import re
 from pathlib import Path
-
 import fitz  
 from mistralai import Mistral
 
@@ -19,8 +18,6 @@ from storage import vector_store
 _mistral = Mistral(api_key=MISTRAL_API_KEY)
 
 EMBED_BATCH_SIZE = 32
-
-
 
 
 def validate_file(filename: str, content_type: str, file_bytes: bytes) -> None:
@@ -62,7 +59,6 @@ def validate_file(filename: str, content_type: str, file_bytes: bytes) -> None:
         raise ValueError(
             f"Filename '{safe_name}' contains invalid characters."
         )
-
 
 
 def extract_pages(file_bytes: bytes) -> list[tuple[int, str]]:
