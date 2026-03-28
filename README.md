@@ -43,6 +43,45 @@ A Retrieval-Augmented Generation (RAG) backend built with FastAPI and Mistral AI
 
 ---
 
+## Workflow Diagram
+
+```mermaid
+flowchart TD
+    A([User]) -->|Upload PDF| B[POST /ingest]
+    A -->|Ask question| C[POST /query]
+
+    subgraph Ingestion Pipeline
+        B --> D[Validate file\nMIME · size · magic bytes]
+        D --> E[Extract text\nPyMuPDF page by page]
+        E --> F[Chunk text\nSliding window 512 chars · 128 overlap]
+        F --> G[Embed chunks\nmistral-embed · batches of 32]
+        G --> H[(NumpyVectorStore\nembeddings.npy + metadata.json)]
+    end
+
+    subgraph Query Pipeline
+        C --> I[LLM Intent Detection]
+        I -->|CHITCHAT| J([Conversational reply])
+        I -->|REFUSAL| K([Refuse · PII / advice])
+        I -->|FACTUAL · LIST · TABLE| L[Transform query\nHyDE-lite rewrite]
+        L --> M[Embed query\nmistral-embed]
+        M --> N[Semantic Search\nCosine similarity · numpy]
+        M --> O[BM25 Keyword Search\nfrom scratch]
+        H --> N
+        H --> O
+        N --> P[RRF Fusion\nReciprocal Rank Fusion]
+        O --> P
+        P --> Q[LLM Re-rank\ncross-encoder]
+        Q --> R{Top score\n≥ 0.35?}
+        R -->|No| S([Insufficient evidence])
+        R -->|Yes| T[Generate answer\nmistral-large-latest]
+        T --> U[Hallucination filter\nLLM evidence check]
+        U --> V[Build citations\nsource · page · excerpt]
+        V --> W([QueryResponse])
+    end
+```
+
+---
+
 ## How It Works
 
 ### 1. Data Ingestion (`/ingest`)
@@ -262,3 +301,28 @@ curl -X POST http://localhost:8000/clear
 ```
 
 Visit `http://localhost:8000/docs` to explore all endpoints interactively via the Swagger UI **Try it out** feature.
+
+---
+
+## Limitations
+
+- **PDF only** — no Word, Excel, or plain text support; scanned/image PDFs are not supported (no OCR)
+- **In-memory store** — the entire vector store is loaded into RAM; impractical beyond ~100k chunks on a standard machine
+- **Single process** — the numpy store is not thread-safe for concurrent writes; parallel ingestion requests could corrupt state
+- **No deduplication** — re-ingesting the same file adds duplicate chunks rather than updating existing ones
+- **Flat retrieval** — no document-level hierarchy; a 300-page PDF and a 2-page PDF are treated the same way
+- **LLM latency** — each query makes 3–4 Mistral API calls (intent, transform, generate, hallucination check); cold queries can take 5–10 seconds
+- **Session state only** — chat history is lost on full browser refresh; no persistence across sessions
+
+---
+
+## Future Work
+
+- **OCR support** — integrate Tesseract or a cloud OCR service to handle scanned PDFs
+- **Multi-format ingestion** — extend the pipeline to support Word, Excel, and plain text files
+- **Persistent chat history** — store conversations in a local database (SQLite) so history survives page refreshes
+- **Incremental ingestion** — detect and skip already-ingested chunks using content hashing to avoid duplicates
+- **Distributed vector store** — swap `NumpyVectorStore` for Pinecone or Weaviate using the existing `VectorStoreBase` interface
+- **Streaming responses** — use FastAPI `StreamingResponse` + Mistral streaming API to show answers token by token
+- **User authentication** — add API key or OAuth2 auth so multiple users can have isolated knowledge bases
+- **Evaluation pipeline** — add a RAGAS-based eval suite to measure retrieval precision, answer faithfulness, and hallucination rate automatically
