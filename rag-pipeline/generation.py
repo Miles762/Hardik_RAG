@@ -15,67 +15,48 @@ def _contains_pii(text: str) -> bool:
     return any(re.search(pattern, text) for pattern in PII_PATTERNS)
 
 
-_CHITCHAT_KEYWORDS = {
-    "hello", "hi", "hey", "thanks", "thank you", "bye", "goodbye",
-    "good morning", "good evening", "how are you", "what's up",
-    "what can you help me with", "what can you do", "who are you",
-    "what are you", "help me",
-}
-
-_LIST_KEYWORDS = {"list", "enumerate", "what are", "give me", "show me all", "steps", "all items", "all components"}
-
-_TABLE_KEYWORDS = {"make a table", "in a table", "tabular", "side by side", "comparison table"}
-
-_REFUSAL_KEYWORDS = {
-    "medical advice", "legal advice", "financial advice",
-    "should i take", "should i invest", "should i sue",
-    "prescribe me", "diagnose me", "am i liable",
-}
-
-
 def detect_intent(query: str) -> QueryIntent:
     """
-    Classify the query into one of five intents without calling the LLM.
-    Rule-based: fast, deterministic, and free.
-
-    Priority order (first match wins):
-      1. REFUSAL   — PII patterns or sensitive topic keywords
-      2. CHITCHAT  — greeting / social phrases
-      3. LIST      — user explicitly wants a list
-      4. TABLE     — user wants a comparison or table
-      5. FACTUAL   — everything else (default)
+    Classify the query into one of five intents using the LLM.
+    PII is still caught with regex before the LLM call to avoid sending sensitive data.
+    Falls back to FACTUAL on any error.
     """
-    q_lower = query.lower().strip()
-
     if _contains_pii(query):
         return QueryIntent.REFUSAL
 
-    if any(kw in q_lower for kw in _REFUSAL_KEYWORDS):
-        return QueryIntent.REFUSAL
-
-    _MULTI_WORD_CHITCHAT = {kw for kw in _CHITCHAT_KEYWORDS if " " in kw}
-    _SINGLE_WORD_CHITCHAT = _CHITCHAT_KEYWORDS - _MULTI_WORD_CHITCHAT
-    q_stripped = q_lower.strip("?! ")
-
-    if any(kw in q_stripped for kw in _MULTI_WORD_CHITCHAT):
-        return QueryIntent.CHITCHAT
-
-    if any(q_stripped == kw or q_stripped.startswith(kw + " ") for kw in _SINGLE_WORD_CHITCHAT):
-        substantive_signals = {
-            "what", "how", "why", "when", "where", "who", "which",
-            "explain", "describe", "compare", "summarize", "list",
-            "find", "show", "tell", "does", "did", "is", "are", "was",
+    try:
+        response = _mistral.chat.complete(
+            model=MISTRAL_FAST_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify the user query into exactly one of these intents:\n"
+                        "- REFUSAL: requests personal/financial/medical/legal advice, "
+                        "asks whether to invest, buy, sell, or take action based on the data\n"
+                        "- CHITCHAT: greetings, small talk, questions about the assistant itself\n"
+                        "- LIST: explicitly asks for a list, steps, or enumeration\n"
+                        "- TABLE: asks for a table, comparison, or side-by-side view\n"
+                        "- FACTUAL: any other question seeking information from documents\n\n"
+                        "Reply with ONLY the intent word, nothing else."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            max_tokens=10,
+            temperature=0.0,
+        )
+        raw = response.choices[0].message.content.strip().upper()
+        intent_map = {
+            "REFUSAL": QueryIntent.REFUSAL,
+            "CHITCHAT": QueryIntent.CHITCHAT,
+            "LIST": QueryIntent.LIST,
+            "TABLE": QueryIntent.TABLE,
+            "FACTUAL": QueryIntent.FACTUAL,
         }
-        if not any(sig in q_lower.split() for sig in substantive_signals):
-            return QueryIntent.CHITCHAT
-
-    if any(kw in q_lower for kw in _LIST_KEYWORDS):
-        return QueryIntent.LIST
-
-    if any(kw in q_lower for kw in _TABLE_KEYWORDS):
-        return QueryIntent.TABLE
-
-    return QueryIntent.FACTUAL
+        return intent_map.get(raw, QueryIntent.FACTUAL)
+    except Exception:
+        return QueryIntent.FACTUAL
 
 
 def _build_system_prompt(intent: QueryIntent) -> str:
@@ -89,7 +70,9 @@ def _build_system_prompt(intent: QueryIntent) -> str:
         "IMPORTANT RULES:\n"
         "1. Use ONLY information explicitly stated in the context. Do not recall outside knowledge.\n"
         "2. If the question specifies a time period, scope, or version, match it exactly — "
-        "do not substitute figures or content from a different period or scope.\n"
+        "do not substitute figures or content from a different period or scope. "
+        "If a document reports both a 3-month and a 6-month figure, use only the one "
+        "that matches the period asked about. If the exact period is unavailable, say so explicitly.\n"
         "3. If a context chunk contains a table with column headers, read the headers carefully "
         "and only use the column that matches what the question asks about.\n"
         "4. When comparing multiple documents or sections, extract information from each source "
