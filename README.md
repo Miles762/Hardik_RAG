@@ -239,7 +239,9 @@ cp .env.example .env
 # Edit .env and set MISTRAL_API_KEY=your_key_here
 ```
 
-### 3. Start the backend
+### 3. Run the backend
+
+> The `data/vectors/` directory is created automatically on first ingest — no manual setup needed. It will contain `embeddings.npy` (chunk vectors) and `metadata.json` (source file, page number, and text for each chunk).
 
 ```bash
 uvicorn main:app --reload
@@ -258,23 +260,33 @@ streamlit run ui/app.py
 
 ## API Reference
 
+**`GET /health`** — Check if the backend is online and how many chunks are stored.
 ```bash
-# Health check
 curl http://localhost:8000/health
+```
 
-# List ingested files
+**`GET /files`** — List all filenames currently in the knowledge base.
+```bash
 curl http://localhost:8000/files
+```
 
-# Ingest a PDF
+**`POST /ingest`** — Upload one or more PDF files into the knowledge base.
+```bash
 curl -X POST http://localhost:8000/ingest -F "files=@/path/to/your.pdf"
+```
 
-# Ask a question
+**`POST /query`** — Ask a natural-language question against the ingested documents.
+```bash
 curl -X POST http://localhost:8000/query -H "Content-Type: application/json" -d '{"question": "What is the main topic?"}'
+```
 
-# Remove a file
+**`POST /remove`** — Remove all chunks for a specific file from the knowledge base.
+```bash
 curl -X POST http://localhost:8000/remove -H "Content-Type: application/json" -d '{"filename": "your.pdf"}'
+```
 
-# Clear everything
+**`POST /clear`** — Wipe the entire knowledge base.
+```bash
 curl -X POST http://localhost:8000/clear
 ```
 
