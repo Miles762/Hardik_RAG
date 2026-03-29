@@ -10,6 +10,5 @@ __pycache__/
 *.pyo
 .venv/
 venv/
-Challenge.pdf
 # OS
 .DS_Store
