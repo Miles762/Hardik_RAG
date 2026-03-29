@@ -262,23 +262,33 @@ streamlit run ui/app.py
 
 ## API Reference
 
+**`GET /health`** — Check if the backend is online and how many chunks are stored.
 ```bash
-# Health check
 curl http://localhost:8000/health
+```
 
-# List ingested files
+**`GET /files`** — List all filenames currently in the knowledge base.
+```bash
 curl http://localhost:8000/files
+```
 
-# Ingest a PDF
+**`POST /ingest`** — Upload one or more PDF files into the knowledge base.
+```bash
 curl -X POST http://localhost:8000/ingest -F "files=@/path/to/your.pdf"
+```
 
-# Ask a question
+**`POST /query`** — Ask a natural-language question against the ingested documents.
+```bash
 curl -X POST http://localhost:8000/query -H "Content-Type: application/json" -d '{"question": "What is the main topic?"}'
+```
 
-# Remove a file
+**`POST /remove`** — Remove all chunks for a specific file from the knowledge base.
+```bash
 curl -X POST http://localhost:8000/remove -H "Content-Type: application/json" -d '{"filename": "your.pdf"}'
+```
 
-# Clear everything
+**`POST /clear`** — Wipe the entire knowledge base.
+```bash
 curl -X POST http://localhost:8000/clear
 ```
 
