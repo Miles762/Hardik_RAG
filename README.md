@@ -130,9 +130,19 @@ When you upload a PDF:
 1. **Validation** — MIME type, file size (max 20 MB), PDF magic bytes, filename sanitisation
 2. **Text extraction** — PyMuPDF extracts text page by page; near-empty pages are skipped
 3. **Chunking** — Sliding window (512 chars, 128 overlap) respecting sentence boundaries
-   - *Why sliding window?* Fixed chunks risk cutting sentences in half. Overlap ensures every sentence appears fully in at least one chunk. Table-heavy pages are stored as a single enriched chunk to preserve row/column context.
 4. **Embedding** — Chunks are sent to Mistral's `mistral-embed` in batches of 32
 5. **Storage** — Vectors saved to `data/vectors/embeddings.npy`; metadata to `data/vectors/metadata.json`
+
+#### Chunking Considerations
+
+- **Chunk size (512 chars)** — Small enough to keep each chunk focused on one topic; large enough to preserve sentence context. Larger chunks improve recall but hurt precision; smaller chunks improve precision but risk losing surrounding context.
+- **Overlap (128 chars)** — Ensures sentences near chunk boundaries appear fully in at least one chunk. Zero overlap risks cutting key sentences in half; too much overlap inflates the vector store with near-duplicate content.
+- **Sentence boundary splitting** — Chunks split at sentence ends where possible, not mid-sentence. Splitting mid-sentence produces incoherent embeddings that reduce retrieval quality.
+- **Table preservation** — Pages detected as tables are stored as a single enriched chunk with a `[Table: ...]` header rather than split. Splitting a table across chunks destroys row/column context and makes structured data unrecoverable.
+- **Table detection heuristic** — `_is_table_heavy()` scores a page on 3 signals: >50% short lines, >25% numeric lines, >20% column-spaced lines. Any 2 of 3 triggers table mode — robust enough to catch financial tables without false-positives on normal prose.
+- **Deterministic chunk IDs** — chunk IDs are MD5 hashes of `file + page + content[:50]`. Re-ingesting the same file produces the same IDs, which is the foundation for future deduplication.
+- **Whitespace normalisation** — consecutive blank lines are collapsed to `\n\n` before chunking to prevent formatting artifacts from producing noise chunks.
+- **Near-empty page skipping** — Pages with fewer than 20 characters are skipped. They add noise to the vector store and dilute retrieval results with blank or header-only content.
 
 ---
 
@@ -175,12 +185,11 @@ When you ask a question:
 |---|---|
 | No third-party vector DB | Required, also removes operational complexity |
 | numpy cosine similarity | Standard implementation; O(N) per query is fast enough for thousands of chunks |
-| BM25 from scratch | Required; `rank-bm25` is an algorithm only |
+| BM25 from scratch | Implemented using Python math only; no external search library used |
 | RRF over weighted averaging | Score scales differ between cosine and BM25; rank-based fusion needs no tuning |
 | LLM intent detection | Rule-based keyword matching is brittle; LLM handles any phrasing naturally |
 | Sliding window chunks | Prevents context loss at chunk boundaries |
 | Abstract VectorStore | `NumpyVectorStore` is swappable — replace with Pinecone/Weaviate by implementing the same interface |
-
 
 ---
 
@@ -214,7 +223,6 @@ When you ask a question:
 | Mistral AI | LLM + embeddings | https://docs.mistral.ai |
 | PyMuPDF | PDF text extraction | https://pymupdf.readthedocs.io |
 | NumPy | Vector arithmetic, cosine similarity | https://numpy.org |
-| rank-bm25 | BM25 algorithm | https://github.com/dorianbrown/rank_bm25 |
 | slowapi | Rate limiting | https://github.com/laurentS/slowapi |
 | Streamlit | UI | https://streamlit.io |
 | python-dotenv | Env var loading | https://github.com/theskumar/python-dotenv |
