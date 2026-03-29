@@ -4,6 +4,26 @@ A Retrieval-Augmented Generation (RAG) backend built with FastAPI and Mistral AI
 
 ---
 
+## Project Structure
+
+```
+rag-pipeline/
+├── main.py          # FastAPI app — defines all API endpoints
+├── ingestion.py     # PDF validation, text extraction, chunking, and embedding
+├── retrieval.py     # Query transformation, semantic search, BM25, RRF fusion, re-ranking
+├── generation.py    # Intent detection, prompt building, LLM generation, hallucination filter
+├── storage.py       # NumpyVectorStore — in-memory vector store with disk persistence
+├── models.py        # Pydantic schemas for all requests and responses
+├── config.py        # All constants and environment variables
+├── requirements.txt # Python dependencies
+├── .env.example     # Environment variable template
+├── screenshots/     # UI screenshots
+└── ui/
+    └── app.py       # Streamlit chat interface
+```
+
+---
+
 ## System Design
 
 ### Architecture Overview
@@ -79,6 +99,25 @@ flowchart TD
         V --> W([QueryResponse])
     end
 ```
+
+---
+
+## Screenshots
+
+**1. UI after ingesting a PDF (867 chunks stored)**
+![UI after ingest](rag-pipeline/screenshots/1-ui-after-ingest.png)
+
+**2. Ingesting a second PDF**
+![Ingesting PDF](rag-pipeline/screenshots/2-ingesting-pdf.png)
+
+**3. Both PDFs ingested (1217 chunks)**
+![Both PDFs ingested](rag-pipeline/screenshots/3-both-pdfs-ingested.png)
+
+**4. Multi-source factual query with citations**
+![Multi-source query](rag-pipeline/screenshots/4-multi-source-query.png)
+
+**5. Refusal intent — financial advice query**
+![Refusal intent](rag-pipeline/screenshots/5-refusal-intent.png)
 
 ---
 
@@ -200,7 +239,11 @@ cp .env.example .env
 # Edit .env and set MISTRAL_API_KEY=your_key_here
 ```
 
-### 3. Start the backend
+### 3. Run the backend
+
+> The `data/vectors/` directory is created automatically on first ingest — no manual setup needed. It will contain `embeddings.npy` (chunk vectors) and `metadata.json` (source file, page number, and text for each chunk).
+
+
 
 ```bash
 uvicorn main:app --reload
@@ -219,67 +262,6 @@ streamlit run ui/app.py
 
 ## API Reference
 
-### `POST /ingest`
-Upload one or more PDF files.
-
-**Request**: `multipart/form-data` with field `files` (one or more PDFs)
-
-**Response** `200 OK`:
-```json
-{
-  "message": "2 file(s) ingested successfully.",
-  "files_ingested": ["doc1.pdf", "doc2.pdf"],
-  "total_chunks": 142
-}
-```
-
----
-
-### `POST /query`
-Ask a question against the knowledge base.
-
-**Request**:
-```json
-{ "question": "What are the main findings?" }
-```
-
-**Response** `200 OK`:
-```json
-{
-  "answer": "The main findings are... [source: doc1.pdf, page 3]",
-  "intent": "factual",
-  "citations": [
-    { "source_file": "doc1.pdf", "page_number": 3, "excerpt": "..." }
-  ],
-  "insufficient_evidence": false,
-  "hallucination_flags": []
-}
-```
-
----
-
-### `GET /health`
-```json
-{ "status": "ok", "chunks_stored": 142 }
-```
-
-### `GET /files`
-```json
-{ "files": ["doc1.pdf", "doc2.pdf"] }
-```
-
-### `POST /remove`
-```json
-{ "filename": "doc1.pdf" }
-```
-
-### `POST /clear`
-Wipes the entire knowledge base.
-
----
-
-## curl Commands
-
 ```bash
 # Health check
 curl http://localhost:8000/health
@@ -290,7 +272,7 @@ curl http://localhost:8000/files
 # Ingest a PDF
 curl -X POST http://localhost:8000/ingest -F "files=@/path/to/your.pdf"
 
-# Query
+# Ask a question
 curl -X POST http://localhost:8000/query -H "Content-Type: application/json" -d '{"question": "What is the main topic?"}'
 
 # Remove a file
@@ -300,7 +282,7 @@ curl -X POST http://localhost:8000/remove -H "Content-Type: application/json" -d
 curl -X POST http://localhost:8000/clear
 ```
 
-Visit `http://localhost:8000/docs` to explore all endpoints interactively via the Swagger UI **Try it out** feature.
+Visit `http://localhost:8000/docs` for interactive Swagger UI.
 
 ---
 
@@ -309,20 +291,17 @@ Visit `http://localhost:8000/docs` to explore all endpoints interactively via th
 - **PDF only** — no Word, Excel, or plain text support; scanned/image PDFs are not supported (no OCR)
 - **In-memory store** — the entire vector store is loaded into RAM; impractical beyond ~100k chunks on a standard machine
 - **Single process** — the numpy store is not thread-safe for concurrent writes; parallel ingestion requests could corrupt state
-- **No deduplication** — re-ingesting the same file adds duplicate chunks rather than updating existing ones
-- **Flat retrieval** — no document-level hierarchy; a 300-page PDF and a 2-page PDF are treated the same way
-- **LLM latency** — each query makes 3–4 Mistral API calls (intent, transform, generate, hallucination check); cold queries can take 5–10 seconds
+- **LLM latency** — each query makes 3–4 Mistral API calls (intent, transform, generate, hallucination check); some queries can take 5–10 seconds
 - **Session state only** — chat history is lost on full browser refresh; no persistence across sessions
 
 ---
 
 ## Future Work
 
-- **OCR support** — integrate Tesseract or a cloud OCR service to handle scanned PDFs
+- **Image PDF support** — add OCR (e.g. Tesseract) to handle scanned or image-based PDFs that contain no extractable text
 - **Multi-format ingestion** — extend the pipeline to support Word, Excel, and plain text files
 - **Persistent chat history** — store conversations in a local database (SQLite) so history survives page refreshes
 - **Incremental ingestion** — detect and skip already-ingested chunks using content hashing to avoid duplicates
 - **Distributed vector store** — swap `NumpyVectorStore` for Pinecone or Weaviate using the existing `VectorStoreBase` interface
-- **Streaming responses** — use FastAPI `StreamingResponse` + Mistral streaming API to show answers token by token
 - **User authentication** — add API key or OAuth2 auth so multiple users can have isolated knowledge bases
-- **Evaluation pipeline** — add a RAGAS-based eval suite to measure retrieval precision, answer faithfulness, and hallucination rate automatically
+
