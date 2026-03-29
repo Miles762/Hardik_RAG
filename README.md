@@ -175,12 +175,12 @@ When you ask a question:
 |---|---|
 | No third-party vector DB | Required, also removes operational complexity |
 | numpy cosine similarity | Standard implementation; O(N) per query is fast enough for thousands of chunks |
-| BM25 from scratch | Required by spec ("no external search library"); `rank-bm25` is an algorithm only |
+| BM25 from scratch | Required; `rank-bm25` is an algorithm only |
 | RRF over weighted averaging | Score scales differ between cosine and BM25; rank-based fusion needs no tuning |
 | LLM intent detection | Rule-based keyword matching is brittle; LLM handles any phrasing naturally |
 | Sliding window chunks | Prevents context loss at chunk boundaries |
 | Abstract VectorStore | `NumpyVectorStore` is swappable — replace with Pinecone/Weaviate by implementing the same interface |
-| Mistral-embed for both chunks and query | Vectors must be in the same embedding space for cosine similarity to be meaningful |
+
 
 ---
 
@@ -239,11 +239,7 @@ cp .env.example .env
 # Edit .env and set MISTRAL_API_KEY=your_key_here
 ```
 
-### 3. Run the backend
-
-> The `data/vectors/` directory is created automatically on first ingest — no manual setup needed. It will contain `embeddings.npy` (chunk vectors) and `metadata.json` (source file, page number, and text for each chunk).
-
-
+### 3. Start the backend
 
 ```bash
 uvicorn main:app --reload
@@ -262,33 +258,23 @@ streamlit run ui/app.py
 
 ## API Reference
 
-**`GET /health`** — Check if the backend is online and how many chunks are stored.
 ```bash
+# Health check
 curl http://localhost:8000/health
-```
 
-**`GET /files`** — List all filenames currently in the knowledge base.
-```bash
+# List ingested files
 curl http://localhost:8000/files
-```
 
-**`POST /ingest`** — Upload one or more PDF files into the knowledge base.
-```bash
+# Ingest a PDF
 curl -X POST http://localhost:8000/ingest -F "files=@/path/to/your.pdf"
-```
 
-**`POST /query`** — Ask a natural-language question against the ingested documents.
-```bash
+# Ask a question
 curl -X POST http://localhost:8000/query -H "Content-Type: application/json" -d '{"question": "What is the main topic?"}'
-```
 
-**`POST /remove`** — Remove all chunks for a specific file from the knowledge base.
-```bash
+# Remove a file
 curl -X POST http://localhost:8000/remove -H "Content-Type: application/json" -d '{"filename": "your.pdf"}'
-```
 
-**`POST /clear`** — Wipe the entire knowledge base.
-```bash
+# Clear everything
 curl -X POST http://localhost:8000/clear
 ```
 
@@ -308,10 +294,9 @@ Visit `http://localhost:8000/docs` for interactive Swagger UI.
 
 ## Future Work
 
-- **Image PDF support** — add OCR (e.g. Tesseract) to handle scanned or image-based PDFs that contain no extractable text
+- **Image PDF support** — add OCR to handle scanned or image-based PDFs that contain no extractable text
 - **Multi-format ingestion** — extend the pipeline to support Word, Excel, and plain text files
 - **Persistent chat history** — store conversations in a local database (SQLite) so history survives page refreshes
-- **Incremental ingestion** — detect and skip already-ingested chunks using content hashing to avoid duplicates
 - **Distributed vector store** — swap `NumpyVectorStore` for Pinecone or Weaviate using the existing `VectorStoreBase` interface
 - **User authentication** — add API key or OAuth2 auth so multiple users can have isolated knowledge bases
 
